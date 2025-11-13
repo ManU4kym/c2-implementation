@@ -566,7 +566,7 @@ impl C2Agent {
     /// Execute a command (simulated for safety)
     fn execute_command(&self, command: &str) -> String {
         let parts: Vec<&str> = command.split_whitespace().collect();
-        
+
         match parts.get(0).copied() {
             Some("sysinfo") => format!(
                 "OS: {}\nHostname: {}\nUser: {}\nAgent ID: {}",
